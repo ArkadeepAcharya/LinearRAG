@@ -16,10 +16,10 @@
 
 ---
 ## 🎉 **News**
-- **[2026-04-07]** Our **[ProbeRAG](https://arxiv.org/abs/2510.12460)** for RAG faithfulness is accepted by ACL'26.
-- **[2026-04-07]** Our **[BAPO](https://arxiv.org/abs/2601.11037)** for reliable agentic search is accepted by ACL'26.
-- **[2026-04-07]** Our **[LegalGraphRAG](https://www.researchgate.net/publication/403734810_LegalGraphRAG_Multi-Agent_Graph_Retrieval-Augmented_Generation_for_Reliable_Legal_Reasoning)** for reliable legal reasoning is accepted by ACL'26.
-- **[2026-04-07]** Our **[LogicPoison](https://arxiv.org/abs/2604.02954)**, a GraphRAG attack model, is accepted by ACL'26.
+- **[2026-04-07]** Our **[ProbeRAG](https://github.com/LinfengGao/ProbeRAG.git)** for RAG faithfulness is accepted by ACL'26.
+- **[2026-04-07]** Our **[BAPO](https://github.com/Liushiyu-0709/BAPO-Reliable-Search.git)** for reliable agentic search is accepted by ACL'26.
+- **[2026-04-07]** Our **[LegalGraphRAG](https://github.com/XMUDeepLIT/LegalGraphRAG.git)** for reliable legal reasoning is accepted by ACL'26.
+- **[2026-04-07]** Our **[LogicPoison](https://github.com/Jord8061/logicPoison.git)**, a GraphRAG attack model, is accepted by ACL'26.
 - **[2026-01-26]** Our **[LinearRAG](https://github.com/DEEP-PolyU/LinearRAG)** for efficient GraphRAG is accepted by ICLR’26.
 - **[2026-01-26]** Our **[GraphRAG Benchmark](https://github.com/GraphRAG-Bench/GraphRAG-Benchmark)** is accepted by ICLR’26.
 - **[2025-10-27]** We release **[LinearRAG](https://github.com/DEEP-PolyU/LinearRAG)**, a relation-free graph construction method for efficient GraphRAG.
