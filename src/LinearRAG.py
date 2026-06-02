@@ -7,7 +7,7 @@ import numpy as np
 import math
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
-from src.ner import SpacyNER
+from src.ner import SpacyNER, IndicNER
 import igraph as ig
 import re
 import logging
@@ -30,7 +30,9 @@ class LinearRAG:
         self.dataset_name = global_config.dataset_name
         self.load_embedding_store()
         self.llm_model = self.config.llm_model
-        self.spacy_ner = SpacyNER(self.config.spacy_model)
+        if self.config.use_spacy_ner:
+            self.spacy_ner = SpacyNER(self.config.spacy_model)
+        self.llm_ner= IndicNER()
         self.graph = ig.Graph(directed=False)
 
     def load_embedding_store(self):
@@ -50,9 +52,77 @@ class LinearRAG:
         else:
             return {}, {}, passage_hash_ids
 
+    def format_prompt(self, prompt_user):
+        # Example Telugu / Andhra Pradesh long-form QA template
+        # Answers can be multi-sentence and explanatory (not restricted to one-line).
+
+        one_shot_rag_qa_docs = (
+            """పత్రం శీర్షిక: అమరావతి\n"""
+            """అమరావతి ఆంధ్రప్రదేశ్ రాష్ట్రానికి ప్రతిపాదిత రాజధాని నగరం. ఈ నగరం కృష్ణా నది దక్షిణ తీరంలో ఉంది. """
+            """ఆంధ్రప్రదేశ్ విభజన తరువాత కొత్త రాజధానిగా అమరావతిని అభివృద్ధి చేయాలని ప్రభుత్వం నిర్ణయించింది. """
+            """ఈ ప్రాంతం బౌద్ధ వారసత్వానికి కూడా ప్రసిద్ధి చెందింది.\n"""
+            """పత్రం శీర్షిక: శ్రీకాకుళం జిల్లా\n"""
+            """శ్రీకాకుళం జిల్లా ఆంధ్రప్రదేశ్ రాష్ట్రం యొక్క ఈశాన్య భాగంలో ఉంది. """
+            """ఈ జిల్లా వ్యవసాయం మరియు మత్స్య పరిశ్రమలకు ప్రసిద్ధి చెందింది. """
+            """వంశధార మరియు నాగావళి నదులు ఈ జిల్లాలో ప్రవహిస్తాయి.\n"""
+            """పత్రం శీర్షిక: తిరుమల తిరుపతి దేవస్థానం\n"""
+            """తిరుమల తిరుపతి దేవస్థానం భారతదేశంలో అత్యంత ప్రసిద్ధ హిందూ ఆలయ సంస్థలలో ఒకటి. """
+            """ఈ ఆలయం శ్రీ వెంకటేశ్వర స్వామికి అంకితం చేయబడింది. """
+            """ప్రతి సంవత్సరం లక్షలాది భక్తులు తిరుమలను సందర్శిస్తారు.\n"""
+            """పత్రం శీర్షిక: కూచిపూడి నృత్యం\n"""
+            """కూచిపూడి ఆంధ్రప్రదేశ్‌కు చెందిన శాస్త్రీయ నృత్యరూపం. """
+            """ఇది కృష్ణా జిల్లాలోని కూచిపూడి గ్రామం నుండి ఉద్భవించింది. """
+            """భావ వ్యక్తీకరణ, నృత్య కదలికలు మరియు సంగీత సమన్వయం ఈ నృత్యానికి ప్రత్యేకత.\n"""
+        )
+
+        one_shot_ircot_demo = (
+            f"{one_shot_rag_qa_docs}"
+            "\n\nప్రశ్న: "
+            f"కూచిపూడి నృత్యం ఏ ప్రాంతం నుండి ఉద్భవించింది? దాని ప్రత్యేకత ఏమిటి?"
+            "\nఆలోచన: "
+            f"పత్రంలో కూచిపూడి ఆంధ్రప్రదేశ్‌కు చెందిన శాస్త్రీయ నృత్యరూపమని చెప్పబడింది. "
+            f"ఇది కృష్ణా జిల్లాలోని కూచిపూడి గ్రామం నుండి ఉద్భవించింది. "
+            f"అలాగే భావ వ్యక్తీకరణ, నృత్య కదలికలు మరియు సంగీత సమన్వయం ఈ నృత్యానికి ప్రత్యేకతగా పేర్కొనబడింది."
+            "\nసమాధానం: "
+            f"కూచిపూడి నృత్యం కృష్ణా జిల్లాలోని కూచిపూడి గ్రామం నుండి ఉద్భవించింది. "
+            f"భావ వ్యక్తీకరణ, నృత్య కదలికలు మరియు సంగీత సమన్వయం ఈ నృత్యానికి ముఖ్య ప్రత్యేకతలు."
+            "\n\n"
+        )
+
+        rag_qa_system = (
+            "మీరు ఒక అభివృద్ధి చెందిన పఠన అవగాహన సహాయకుడు. "
+            "ఇచ్చిన పాఠ్యాలను మరియు ప్రశ్నలను జాగ్రత్తగా విశ్లేషించాలి. "
+            'మీ సమాధానం "ఆలోచన: " తర్వాత ప్రారంభమవాలి, అక్కడ మీరు దశలవారీగా reasoning వివరించాలి. '
+            'చివరలో "సమాధానం: " తర్వాత స్పష్టమైన మరియు సంపూర్ణ సమాధానం ఇవ్వాలి. '
+            "సమాధానం ఒకే వాక్యానికి పరిమితం కావాల్సిన అవసరం లేదు."
+        )
+
+        one_shot_rag_qa_input = (
+            f"{one_shot_rag_qa_docs}"
+            "\n\nప్రశ్న: "
+            "కూచిపూడి నృత్యం ఏ ప్రాంతం నుండి ఉద్భవించింది? దాని ప్రత్యేకత ఏమిటి?"
+            "\nఆలోచన: "
+        )
+
+        one_shot_rag_qa_output = (
+            "పత్రంలో కూచిపూడి ఆంధ్రప్రదేశ్‌కు చెందిన శాస్త్రీయ నృత్యరూపమని పేర్కొనబడింది. "
+            "ఇది కృష్ణా జిల్లాలోని కూచిపూడి గ్రామం నుండి ఉద్భవించింది. "
+            "అదేవిధంగా భావ వ్యక్తీకరణ, నృత్య కదలికలు మరియు సంగీత సమన్వయం ఈ నృత్యానికి ప్రత్యేక లక్షణాలని చెప్పబడింది."
+            "\nసమాధానం: కూచిపూడి నృత్యం కృష్ణా జిల్లాలోని కూచిపూడి గ్రామం నుండి ఉద్భవించింది. "
+            "భావ వ్యక్తీకరణ, నృత్య కదలికలు మరియు సంగీత సమన్వయం దీని ముఖ్య ప్రత్యేకతలు."
+        )
+
+        prompt_template = [
+            {"role": "system", "content": rag_qa_system},
+            {"role": "user", "content": one_shot_rag_qa_input},
+            {"role": "assistant", "content": one_shot_rag_qa_output},
+            {"role": "user", "content": f"{prompt_user}"},
+        ]
+
+        return prompt_template
     def qa(self, questions):
         retrieval_results = self.retrieve(questions)
-        system_prompt = f"""As an advanced reading comprehension assistant, your task is to analyze text passages and corresponding questions meticulously. Your response start after "Thought: ", where you will methodically break down the reasoning process, illustrating how you arrive at conclusions. Conclude with "Answer: " to present a concise, definitive response, devoid of additional elaborations."""
+        # system_prompt = f"""As an advanced reading comprehension assistant, your task is to analyze text passages and corresponding questions meticulously. Your response start after "Thought: ", where you will methodically break down the reasoning process, illustrating how you arrive at conclusions. Conclude with "Answer: " to present a concise, definitive response, devoid of additional elaborations."""
         all_messages = []
         for retrieval_result in retrieval_results:
             question = retrieval_result["question"]
@@ -60,11 +130,12 @@ class LinearRAG:
             prompt_user = """"""
             for passage in sorted_passage:
                 prompt_user += f"{passage}\n"
-            prompt_user += f"Question: {question}\n Thought: "
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt_user}
-            ]
+            prompt_user += f"\nప్రశ్న: {question}\n ఆలోచన:"
+            # messages = [
+            #     {"role": "system", "content": system_prompt},
+            #     {"role": "user", "content": prompt_user}
+            # ]
+            messages=self.format_prompt(prompt_user)
             all_messages.append(messages)
         with ThreadPoolExecutor(max_workers=self.config.max_workers) as executor:
             all_qa_results = list(tqdm(
@@ -229,6 +300,9 @@ class LinearRAG:
             new_entities = {}
             for entity_hash_id, (entity_id, entity_score, tier) in current_entities.items():
                 if entity_score < self.config.iteration_threshold:
+                    continue
+                # Skip entities that don't have sentence mappings
+                if entity_hash_id not in self.entity_hash_id_to_sentence_hash_ids:
                     continue
                 sentence_hash_ids = [sid for sid in list(self.entity_hash_id_to_sentence_hash_ids[entity_hash_id]) if sid not in used_sentence_hash_ids]
                 if not sentence_hash_ids:
@@ -531,7 +605,10 @@ class LinearRAG:
         return overlap
     
     def get_seed_entities(self, question):
-        question_entities = list(self.spacy_ner.question_ner(question))
+        if self.config.use_spacy_ner:
+            question_entities = list(self.spacy_ner.question_ner(question))
+        else:
+            question_entities = list(self.llm_ner.question_ner(question))
         if len(question_entities) == 0:
             return [],[],[],[]
         question_entity_embeddings = self.config.embedding_model.encode(question_entities,normalize_embeddings=True,show_progress_bar=False,batch_size=self.config.batch_size)
@@ -560,7 +637,10 @@ class LinearRAG:
         existing_passage_hash_id_to_entities,existing_sentence_to_entities, new_passage_hash_ids = self.load_existing_data(hash_id_to_passage.keys())
         if len(new_passage_hash_ids) > 0:
             new_hash_id_to_passage = {k : hash_id_to_passage[k] for k in new_passage_hash_ids}
-            new_passage_hash_id_to_entities,new_sentence_to_entities = self.spacy_ner.batch_ner(new_hash_id_to_passage, self.config.max_workers)
+            if self.config.use_spacy_ner:
+                new_passage_hash_id_to_entities,new_sentence_to_entities = self.spacy_ner.batch_ner(new_hash_id_to_passage, self.config.max_workers)
+            else:
+                new_passage_hash_id_to_entities,new_sentence_to_entities = self.llm_ner.batch_ner(new_hash_id_to_passage, self.config.max_workers)
             self.merge_ner_results(existing_passage_hash_id_to_entities, existing_sentence_to_entities, new_passage_hash_id_to_entities, new_sentence_to_entities)
         self.save_ner_results(existing_passage_hash_id_to_entities, existing_sentence_to_entities)
         entity_nodes, sentence_nodes,passage_hash_id_to_entities,self.entity_to_sentence,self.sentence_to_entity = self.extract_nodes_and_edges(existing_passage_hash_id_to_entities, existing_sentence_to_entities)
@@ -651,15 +731,22 @@ class LinearRAG:
         passage_hash_id_to_entities = defaultdict(set)
         entity_to_sentence= defaultdict(set)
         sentence_to_entity = defaultdict(set)
+        
+        # First pass: collect all entities from passages
         for passage_hash_id, entities in existing_passage_hash_id_to_entities.items():
             for entity in entities:
                 entity_nodes.add(entity)
                 passage_hash_id_to_entities[passage_hash_id].add(entity)
-        for sentence,entities in existing_sentence_to_entities.items():
+        
+        # Second pass: collect entities from sentences and ensure consistency
+        for sentence, entities in existing_sentence_to_entities.items():
             sentence_nodes.add(sentence)
             for entity in entities:
+                # Add entity to entity_nodes (handles legacy data inconsistency)
+                entity_nodes.add(entity)
                 entity_to_sentence[entity].add(sentence)
                 sentence_to_entity[sentence].add(entity)
+        
         return entity_nodes, sentence_nodes, passage_hash_id_to_entities, entity_to_sentence, sentence_to_entity
 
     def merge_ner_results(self, existing_passage_hash_id_to_entities, existing_sentence_to_entities, new_passage_hash_id_to_entities, new_sentence_to_entities):

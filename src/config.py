@@ -8,8 +8,9 @@ class LinearRAGConfig:
     chunk_token_size: int = 1000
     chunk_overlap_token_size: int = 100
     spacy_model: str = "en_core_web_trf"
+    use_spacy_ner: bool = False
     working_dir: str = "./import"
-    batch_size: int = 128
+    batch_size: int = 32
     max_workers: int = 16
     retrieval_top_k: int = 5
     max_iterations: int = 3

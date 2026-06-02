@@ -14,21 +14,50 @@ import os
 def compute_mdhash_id(content: str, prefix: str = "") -> str:
     return prefix + md5(content.encode()).hexdigest()
 
+import httpx
+from openai import OpenAI
+
+
 class LLM_Model:
-    def __init__(self, llm_model):
-        http_client = httpx.Client(timeout=60.0, trust_env=False)
-        self.openai_client = OpenAI(
-            api_key=os.getenv("OPENAI_API_KEY"),
-            base_url=os.getenv("OPENAI_BASE_URL"),
-            http_client=http_client
+    def __init__(
+        self,
+        model_name: str,
+        base_url: str = "http://localhost:8000/v1",
+        api_key: str = "EMPTY",
+        rits_api_key: str ="EMPTY",
+        max_tokens: int = 8192,
+        temperature: float = 0.0,
+        timeout: float = 60.0,
+    ):
+        http_client = httpx.Client(
+            timeout=timeout,
+            trust_env=False,
         )
+
+        self.openai_client = OpenAI(
+            api_key=api_key,  # vLLM ignores this but OpenAI client requires it
+            base_url=base_url,
+            http_client=http_client,
+            max_retries=10,
+            timeout=1800.0,
+            default_headers={
+                    "RITS_API_KEY": rits_api_key,
+                },
+        )
+
         self.llm_config = {
-            "model": llm_model,
-            "max_tokens": 2000,
-            "temperature": 0,
+            "model": model_name,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
         }
+
     def infer(self, messages):
-        response = self.openai_client.chat.completions.create(**self.llm_config,messages=messages)
+        response = self.openai_client.chat.completions.create(
+            messages=messages,
+            **self.llm_config,
+        )
+        # print(response)
+
         return response.choices[0].message.content
 
 
