@@ -53,8 +53,8 @@ class LinearRAG:
             return {}, {}, passage_hash_ids
 
     def format_prompt(self, prompt_user):
-        # Example Telugu / Andhra Pradesh long-form QA template
-        # Answers can be multi-sentence and explanatory (not restricted to one-line).
+        Example Telugu / Andhra Pradesh long-form QA template
+        Answers can be multi-sentence and explanatory (not restricted to one-line).
 
         one_shot_rag_qa_docs = (
             """పత్రం శీర్షిక: అమరావతి\n"""
@@ -119,10 +119,51 @@ class LinearRAG:
             {"role": "user", "content": f"{prompt_user}"},
         ]
 
+    #     PROMPT=("You are given the following set of documents and a question. "
+    # "Your task is to answer the question. The documents may or may not "
+    # "contain relevant information to answer the question.\n")
+    #     prompt_template = [
+    #         {"role":"user", "content": PROMPT + prompt_user},
+    #     ]
+
         return prompt_template
-    def qa(self, questions):
-        retrieval_results = self.retrieve(questions)
-        # system_prompt = f"""As an advanced reading comprehension assistant, your task is to analyze text passages and corresponding questions meticulously. Your response start after "Thought: ", where you will methodically break down the reasoning process, illustrating how you arrive at conclusions. Conclude with "Answer: " to present a concise, definitive response, devoid of additional elaborations."""
+    def qa(self, questions, checkpoint_path=None, checkpoint_interval=10):
+        """
+        Perform QA with checkpoint support for crash recovery.
+        
+        Args:
+            questions: List of question dictionaries
+            checkpoint_path: Path to save/load checkpoint file
+            checkpoint_interval: Save checkpoint after every N questions
+        
+        Returns:
+            List of retrieval results with predictions
+        """
+        # Load checkpoint if exists
+        start_idx = 0
+        completed_results = []
+        
+        if checkpoint_path and os.path.exists(checkpoint_path):
+            logger.info(f"Loading checkpoint from {checkpoint_path}")
+            with open(checkpoint_path, 'r', encoding='utf-8') as f:
+                checkpoint_data = json.load(f)
+                completed_results = checkpoint_data.get('completed_results', [])
+                start_idx = checkpoint_data.get('last_completed_index', 0) + 1
+                logger.info(f"Resuming from question index {start_idx} (completed {len(completed_results)} questions)")
+        
+        # Process remaining questions
+        remaining_questions = questions[start_idx:]
+        
+        if len(remaining_questions) == 0:
+            logger.info("All questions already processed. Returning cached results.")
+            return completed_results
+        
+        logger.info(f"Processing {len(remaining_questions)} remaining questions (out of {len(questions)} total)")
+        
+        # Retrieve passages for remaining questions
+        retrieval_results = self.retrieve(remaining_questions)
+        
+        # Prepare messages for LLM inference
         all_messages = []
         for retrieval_result in retrieval_results:
             question = retrieval_result["question"]
@@ -131,26 +172,47 @@ class LinearRAG:
             for passage in sorted_passage:
                 prompt_user += f"{passage}\n"
             prompt_user += f"\nప్రశ్న: {question}\n ఆలోచన:"
-            # messages = [
-            #     {"role": "system", "content": system_prompt},
-            #     {"role": "user", "content": prompt_user}
-            # ]
-            messages=self.format_prompt(prompt_user)
+            messages = self.format_prompt(prompt_user)
             all_messages.append(messages)
-        with ThreadPoolExecutor(max_workers=self.config.max_workers) as executor:
-            all_qa_results = list(tqdm(
-                executor.map(self.llm_model.infer, all_messages),
-                total=len(all_messages),
-                desc="QA Reading (Parallel)"
-            ))
-
-        for qa_result,question_info in zip(all_qa_results,retrieval_results):
-            try:
-                pred_ans = qa_result.split('Answer:')[1].strip()
-            except:
-                pred_ans = qa_result
-            question_info["pred_answer"] = pred_ans
-        return retrieval_results
+        
+        # Process questions with checkpointing
+        for i in range(0, len(all_messages), checkpoint_interval):
+            batch_end = min(i + checkpoint_interval, len(all_messages))
+            batch_messages = all_messages[i:batch_end]
+            batch_retrieval_results = retrieval_results[i:batch_end]
+            
+            logger.info(f"Processing batch {i//checkpoint_interval + 1}: questions {start_idx + i} to {start_idx + batch_end - 1}")
+            
+            # Run inference for this batch
+            with ThreadPoolExecutor(max_workers=self.config.max_workers) as executor:
+                batch_qa_results = list(tqdm(
+                    executor.map(self.llm_model.infer, batch_messages),
+                    total=len(batch_messages),
+                    desc=f"QA Batch {i//checkpoint_interval + 1}"
+                ))
+            
+            # Extract answers and update results
+            for qa_result, question_info in zip(batch_qa_results, batch_retrieval_results):
+                try:
+                    pred_ans = qa_result.split('Answer:')[1].strip()
+                except:
+                    pred_ans = qa_result
+                question_info["pred_answer"] = pred_ans
+                completed_results.append(question_info)
+            
+            # Save checkpoint after each batch
+            if checkpoint_path:
+                checkpoint_data = {
+                    'last_completed_index': start_idx + batch_end - 1,
+                    'total_questions': len(questions),
+                    'completed_results': completed_results
+                }
+                os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+                with open(checkpoint_path, 'w', encoding='utf-8') as f:
+                    json.dump(checkpoint_data, f, ensure_ascii=False, indent=2)
+                logger.info(f"Checkpoint saved: {len(completed_results)}/{len(questions)} questions completed")
+        
+        return completed_results
         
     def retrieve(self, questions):
         self.entity_hash_ids = list(self.entity_embedding_store.hash_id_to_text.keys())

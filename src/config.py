@@ -10,7 +10,7 @@ class LinearRAGConfig:
     spacy_model: str = "en_core_web_trf"
     use_spacy_ner: bool = False
     working_dir: str = "./import"
-    batch_size: int = 32
+    batch_size: int = 64
     max_workers: int = 16
     retrieval_top_k: int = 5
     max_iterations: int = 3

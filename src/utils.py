@@ -29,36 +29,55 @@ class LLM_Model:
         temperature: float = 0.0,
         timeout: float = 60.0,
     ):
-        http_client = httpx.Client(
-            timeout=timeout,
-            trust_env=False,
-        )
-
-        self.openai_client = OpenAI(
-            api_key=api_key,  # vLLM ignores this but OpenAI client requires it
-            base_url=base_url,
-            http_client=http_client,
-            max_retries=10,
-            timeout=1800.0,
-            default_headers={
-                    "RITS_API_KEY": rits_api_key,
-                },
-        )
-
+        # Store configuration for creating thread-safe clients
+        self.api_key = api_key
+        self.base_url = base_url
+        self.rits_api_key = rits_api_key
+        self.timeout = timeout
+        
         self.llm_config = {
             "model": model_name,
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
 
-    def infer(self, messages):
-        response = self.openai_client.chat.completions.create(
-            messages=messages,
-            **self.llm_config,
+    def _get_client(self):
+        """Create a new OpenAI client for thread-safe operations"""
+        # Use a fresh HTTP client with limits to prevent connection pool issues
+        http_client = httpx.Client(
+            timeout=httpx.Timeout(self.timeout, connect=60.0),
+            trust_env=False,
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
         )
-        # print(response)
+        
+        return OpenAI(
+            api_key=self.api_key,
+            base_url=self.base_url,
+            http_client=http_client,
+            max_retries=3,
+            timeout=1800.0,
+            default_headers={
+                "RITS_API_KEY": self.rits_api_key,
+            },
+        )
 
-        return response.choices[0].message.content
+    def infer(self, messages):
+        # Create a new client for each request to ensure thread safety
+        client = self._get_client()
+        try:
+            response = client.chat.completions.create(
+                messages=messages,
+                **self.llm_config,
+            )
+            return response.choices[0].message.content
+        finally:
+            # Properly close both the client and its HTTP client
+            try:
+                if hasattr(client, '_client') and client._client:
+                    client._client.close()
+                client.close()
+            except Exception:
+                pass  # Ignore cleanup errors
 
 
 

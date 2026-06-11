@@ -12,6 +12,7 @@ from src.utils import setup_logging
 from datetime import datetime
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"  # Disable tokenizers parallelism to avoid fork issues
 warnings.filterwarnings('ignore')
 
 from dotenv import load_dotenv
@@ -25,8 +26,8 @@ def parse_arguments():
     parser.add_argument("--spacy_model", type=str, default="en_core_web_trf", help="The spacy model to use")
     parser.add_argument("--embedding_model", type=str, default="BAAI/bge-m3", help="The path of embedding model to use")
     parser.add_argument("--dataset_name", type=str, default="agri-rag-telugu", help="The dataset to use")
-    parser.add_argument("--llm_model", type=str, default="openai/gpt-oss-120b", help="The LLM model to use")
-    parser.add_argument("--llm_base_url", type=str, default="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/gpt-oss-120b/v1", help="vllm_base_url")
+    parser.add_argument("--llm_model", type=str, default="google/gemma-4-26B-A4B-it", help="The LLM model to use")
+    parser.add_argument("--llm_base_url", type=str, default="http://cccxc624.pok.ibm.com:8000/v1", help="vllm_base_url")
     parser.add_argument("--max_workers", type=int, default=16, help="The max number of workers to use")
     parser.add_argument("--max_iterations", type=int, default=3, help="The max number of iterations to use")
     parser.add_argument("--iteration_threshold", type=float, default=0.4, help="The threshold for iteration")
@@ -38,6 +39,8 @@ def parse_arguments():
         action="store_true",
         help="Whether to use spacy ner or LLM ner",
     )
+    parser.add_argument("--checkpoint_interval", type=int, default=50, help="Save checkpoint after every N questions")
+    parser.add_argument("--resume_from_checkpoint", type=str, default=None, help="Path to checkpoint file to resume from")
     return parser.parse_args()
 
 
@@ -53,7 +56,7 @@ def parse_arguments():
 
 def load_dataset(dataset_name):
     if dataset_name=='agri-rag-telugu':
-        corpus_path = f"/dccstor/indiclm/arkadeep/ap_gov/seed_data.jsonl"
+        corpus_path = f"/dccstor/indiclm/rudra/IRL-Indic-RAG/data/seed_data.jsonl"
         with open(corpus_path, "r") as f:
             docs = []
             for each_line in f:
@@ -66,7 +69,7 @@ def load_dataset(dataset_name):
                 docs.append(text)
         passages = [f'{idx}:{chunk}' for idx, chunk in enumerate(docs)]
         questions = []
-        TEST_FILE = ( "/dccstor/indiclm/arkadeep/ap_gov/IRL-Indic-RAG/output/training_data/val.jsonl" )
+        TEST_FILE = ( "/dccstor/indiclm/arkadeep/ap_gov/IRL-Indic-RAG/output/multi_hop_qa_eval/combined_multihop.jsonl" )
         with open(TEST_FILE, "r", encoding="utf-8") as f:
             for line in f:
                 instance = json.loads(line.strip())
@@ -74,24 +77,39 @@ def load_dataset(dataset_name):
                 questions.append(
                     {
                         "question": instance["question"],
-                        "answer": instance.get("answer", "")
+                        "answer": instance.get("gold_answer", "")
                     }
                 )
     
-    return questions[:10], passages
+    return questions, passages
 
 
 def load_embedding_model(embedding_model):
-    embedding_model = SentenceTransformer(embedding_model,device="cuda")
+    embedding_model = SentenceTransformer(embedding_model,device="cpu")
     return embedding_model
 
 def main():
-    time = datetime.now()
-    time_str = time.strftime("%Y-%m-%d_%H-%M-%S")
     args = parse_arguments()
+    
+    # Determine output directory and checkpoint path
+    if args.resume_from_checkpoint:
+        # Extract time_str from checkpoint path
+        checkpoint_path = args.resume_from_checkpoint
+        time_str = checkpoint_path.split('/')[-2] if '/' in checkpoint_path else datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        print(f"Resuming from checkpoint: {checkpoint_path}")
+    else:
+        time = datetime.now()
+        time_str = time.strftime("%Y-%m-%d_%H-%M-%S")
+        checkpoint_path = f"gemma4_26B_multihop_updated_chunks_results/{args.dataset_name}/{time_str}/checkpoint.json"
+    
+    output_dir = f"gemma4_26B_multihop_updated_chunks_results/{args.dataset_name}/{time_str}"
+    os.makedirs(output_dir, exist_ok=True)
+    
+    setup_logging(f"{output_dir}/log.txt")
+    
     embedding_model = load_embedding_model(args.embedding_model)
-    questions,passages = load_dataset(args.dataset_name)
-    setup_logging(f"results/{args.dataset_name}/{time_str}/log.txt")
+    questions, passages = load_dataset(args.dataset_name)
+    
     llm_model = LLM_Model(model_name=args.llm_model, base_url=args.llm_base_url, rits_api_key=rits_api_key)
     config = LinearRAGConfig(
         dataset_name=args.dataset_name,
@@ -106,13 +124,35 @@ def main():
         top_k_sentence=args.top_k_sentence,
         use_vectorized_retrieval=args.use_vectorized_retrieval
     )
+    
     rag_model = LinearRAG(global_config=config)
     rag_model.index(passages)
-    questions = rag_model.qa(questions)
-    os.makedirs(f"results/{args.dataset_name}/{time_str}", exist_ok=True)
-    with open(f"results/{args.dataset_name}/{time_str}/predictions.json", "w", encoding="utf-8") as f:
+    
+    # Run QA with checkpoint support
+    print(f"Starting QA inference with checkpoint support...")
+    print(f"Checkpoint will be saved to: {checkpoint_path}")
+    print(f"Checkpoint interval: every {args.checkpoint_interval} questions")
+    
+    questions = rag_model.qa(
+        questions=questions,
+        checkpoint_path=checkpoint_path,
+        checkpoint_interval=args.checkpoint_interval
+    )
+    
+    # Save final predictions
+    predictions_path = f"{output_dir}/predictions.json"
+    with open(predictions_path, "w", encoding="utf-8") as f:
         json.dump(questions, f, ensure_ascii=False, indent=4)
-    evaluator = Evaluator(llm_model=llm_model, predictions_path=f"results/{args.dataset_name}/{time_str}/predictions.json")
+    
+    print(f"QA inference completed. Results saved to: {predictions_path}")
+    
+    # Run evaluation
+    evaluator = Evaluator(llm_model=llm_model, predictions_path=predictions_path)
     evaluator.evaluate(max_workers=args.max_workers)
+    
+    # Clean up checkpoint file after successful completion
+    if os.path.exists(checkpoint_path):
+        os.remove(checkpoint_path)
+        print(f"Checkpoint file removed after successful completion: {checkpoint_path}")
 if __name__ == "__main__":
     main()
